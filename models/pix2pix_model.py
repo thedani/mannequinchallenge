@@ -23,10 +23,12 @@ import sys
 import h5py
 import os.path
 from skimage.io import imsave
+from skimage.io import imread
+from skimage import transform
 from models import hourglass
-
 import torchvision.utils as vutils
-
+from PIL import Image
+from PIL.ExifTags import TAGS
 
 # torch.manual_seed(1)
 class HourglassVariant(torch.nn.Module):
@@ -69,14 +71,19 @@ class Pix2PixModel(base_model.BaseModel):
         self.initialize(opt)
 
         self.mode = opt.mode
+        self.bw = 1
+        self.num_input = 3
         if opt.input == 'single_view':
             self.num_input = 3
         elif opt.input == 'two_view':
             self.num_input = 6
         elif opt.input == 'two_view_k':
             self.num_input = 7
-        else:
-            raise ValueError("Unknown input type %s" % opt.input)
+        elif opt.input == 'white':
+            self.bw = 0
+        elif opt.input == 'black':
+            self.bw = 1
+
 
         if self.mode == 'Ours_Bilinear':
             print(
@@ -610,8 +617,51 @@ class Pix2PixModel(base_model.BaseModel):
 
             hdf5_file_write.close()
 
-    def run_and_save_DAVIS(self, input_, targets, save_path):
-        assert (self.num_input == 3)
+    def get_exif_of_image(self, file):
+        im = Image.open(file)
+
+        try:
+            exif = im._getexif()
+        except AttributeError:
+            return {}
+
+        if exif == None:
+            return {}
+
+        exif_table = {}
+        for tag_id, value in exif.items():
+            tag = TAGS.get(tag_id, tag_id)
+            exif_table[tag] = value
+
+        return exif_table
+
+    def get_exif_rotation(self, orientation_num):
+        if orientation_num == 1:
+            return 0
+        if orientation_num == 2:
+            return 0
+        if orientation_num == 3:
+            return 180
+        if orientation_num == 4:
+            return 180
+        if orientation_num == 5:
+            return 270
+        if orientation_num == 6:
+            return 270
+        if orientation_num == 7:
+            return 90
+        if orientation_num == 8:
+            return 90
+
+    def rotation_exif_info(self, path):
+        exif    = self.get_exif_of_image(path)
+        rotate  = 0
+        if 'Orientation' in exif:
+            rotate = self.get_exif_rotation(exif['Orientation'])
+        return rotate
+
+    def run_and_save_DAVIS(self, input_, targets, save_path, input_dir):
+#        assert (self.num_input == 3)
         input_imgs = autograd.Variable(input_.cuda(), requires_grad=False)
 
         stack_inputs = input_imgs
@@ -625,8 +675,8 @@ class Pix2PixModel(base_model.BaseModel):
 
         for i in range(0, len(targets['img_1_path'])):
 
-            youtube_dir = save_path + targets['img_1_path'][i].split('/')[-2]
-
+#            youtube_dir = save_path + targets['img_1_path'][i].split('/')[-2]
+            youtube_dir = save_path
             if not os.path.exists(youtube_dir):
                 os.makedirs(youtube_dir)
 
@@ -637,14 +687,26 @@ class Pix2PixModel(base_model.BaseModel):
 
             output_path = youtube_dir + '/' + \
                 targets['img_1_path'][i].split('/')[-1]
-            print(output_path)
+
+            input_path = input_dir + targets['img_1_path'][i]
+            print(input_path + '  --->  ' + output_path)
+            rotate = self.rotation_exif_info(input_path)
+            img = imread(input_path, plugin='matplotlib')
+            img = transform.rotate(img, rotate, resize=True, center=None)
+            h=img.shape[0]
+            w=img.shape[1]
             disparity = 1. / pred_d_ref
             disparity = disparity / np.max(disparity)
             disparity = np.tile(np.expand_dims(disparity, axis=-1), (1, 1, 3))
-            saved_imgs = np.concatenate((saved_img, disparity), axis=1)
+            disparity = transform.resize(disparity, (h, w))
+            if self.bw == 0:
+                saved_imgs = disparity # np.concatenate((img, disparity), axis=1)
+            else:
+                saved_imgs = (1.0-disparity) # np.concatenate((img, (1.0-disparity)), axis=1)
             saved_imgs = (saved_imgs*255).astype(np.uint8)
 
             imsave(output_path, saved_imgs)
+
 
     def switch_to_train(self):
         self.netG.train()
