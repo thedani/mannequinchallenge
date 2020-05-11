@@ -18,8 +18,12 @@ import numpy as np
 import torch
 import os
 import os.path
+import glob
+from skimage import io
 from skimage import transform
 from skimage.io import imread
+from PIL import Image
+from PIL.ExifTags import TAGS
 
 
 keypoints_simple_dict = {0: 0, 1: 1, 2: 2, 3: 2, 4: 3, 5: 3, 6: 4, 7: 4,
@@ -247,7 +251,9 @@ class TUMImageFolder(data.Dataset):
 class DAVISImageFolder(data.Dataset):
 
     def __init__(self, list_path):
-        img_list = make_dataset(list_path)
+#        img_list = make_dataset(list_path)
+        img_list = os.listdir(list_path)
+#        img_list = glob.glob(list_path)
         if len(img_list) == 0:
             raise(RuntimeError('Found 0 images in: ' + list_path))
         self.list_path = list_path
@@ -258,18 +264,75 @@ class DAVISImageFolder(data.Dataset):
 
         self.use_pp = True
 
-    def load_imgs(self, img_path):
-        img = imread(img_path)
-        img = np.float32(img)/255.0
-        img = transform.resize(img, (self.resized_height, self.resized_width))
+    def get_exif_of_image(self, file):
+        im = Image.open(file)
 
+        try:
+            exif = im._getexif()
+        except AttributeError:
+            return {}
+
+        if exif == None:
+            return {}
+
+        exif_table = {}
+        for tag_id, value in exif.items():
+            tag = TAGS.get(tag_id, tag_id)
+            exif_table[tag] = value
+
+        return exif_table
+
+    def get_exif_rotation(self, orientation_num):
+        if orientation_num == 1:
+            return 0
+        if orientation_num == 2:
+            return 0
+        if orientation_num == 3:
+            return 180
+        if orientation_num == 4:
+            return 180
+        if orientation_num == 5:
+            return 270
+        if orientation_num == 6:
+            return 270
+        if orientation_num == 7:
+            return 90
+        if orientation_num == 8:
+            return 90
+
+    def rotation_exif_info(self, path):
+        exif    = self.get_exif_of_image(path)
+        rotate  = 0
+        if 'Orientation' in exif:
+            rotate = self.get_exif_rotation(exif['Orientation'])
+        return rotate
+
+    def load_imgs(self, img_path):
+#        print(img_path)
+        rotate = self.rotation_exif_info(img_path)
+        img = imread(img_path, plugin='matplotlib')
+        img = transform.rotate(img, rotate, resize=True, center=None)
+#        print(img.dtype)
+        h=img.shape[0]
+        w=img.shape[1]
+#        h=img.height
+#        w=img.width
+        if w>h:
+            self.resized_width=512
+            self.resized_width=16 * round(32*h/w)
+        else:
+            self.resized_height=512
+            self.resized_width=16 * round(32*w/h)
+
+#        img = np.float32(img)/255.0
+        img = transform.resize(img, (self.resized_height, self.resized_width))
         return img
 
     def __getitem__(self, index):
         targets_1 = {}
 
         h5_path = self.img_list[index].rstrip()
-        img = self.load_imgs(h5_path)
+        img = self.load_imgs(self.list_path + h5_path)
 
         final_img = torch.from_numpy(np.ascontiguousarray(
             img).transpose(2, 0, 1)).contiguous().float()
